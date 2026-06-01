@@ -14,6 +14,7 @@ func main() {
 	defer app.Discord.Close()
 
 	app.Discord.AddHandlerOnce(app.HandleReady)
+	app.Discord.AddHandler(app.HandleMessageCreate)
 
 	app.Discord.Open()
 
@@ -22,4 +23,5 @@ func main() {
 	<-sig
 
 	log.Println("Shutting down...")
+	os.Exit(0)
 }
