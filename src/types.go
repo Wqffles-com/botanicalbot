@@ -20,8 +20,19 @@ type OpenAIConfig struct {
 	BaseUrl string
 }
 
+type ConversationHistory struct {
+	Messages []Message
+}
+
+type Message struct {
+	Role    string
+	Content string
+	UserID  string
+}
+
 type App struct {
 	Discord *discordgo.Session
 	OpenAI  *openai.Client
+	History *ConversationHistory
 	Config  *Config
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -17,6 +18,7 @@ func (app *App) HandleMessageCreate(_ *discordgo.Session, m *discordgo.MessageCr
 		return
 	}
 
+	// check if bot was mentioned
 	botID := app.Discord.State.User.ID
 	mentioned := strings.Contains(m.Content, "<@"+botID+">") || strings.Contains(m.Content, "<@!"+botID+">")
 	repliedToBot := m.ReferencedMessage != nil && m.ReferencedMessage.Author.ID == botID
@@ -25,13 +27,56 @@ func (app *App) HandleMessageCreate(_ *discordgo.Session, m *discordgo.MessageCr
 		return
 	}
 
+	// get information
 	ctx := context.WithValue(context.Background(), "information", struct {
-		User string
+		Username string
+		UserID   string
 	}{
-		User: m.Author.Username + " (" + m.Author.ID + ")",
+		Username: m.Author.Username,
+		UserID:   m.Author.ID,
 	})
-	response, err := app.GenerateResponse(ctx, m.Content)
 
+	// typing indicator
+	stopTyping := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(7 * time.Second)
+		defer ticker.Stop()
+		// Send typing immediately, then refresh every 7 seconds
+		app.Discord.ChannelTyping(m.ChannelID)
+		for {
+			select {
+			case <-ticker.C:
+				app.Discord.ChannelTyping(m.ChannelID)
+			case <-stopTyping:
+				return
+			}
+		}
+	}()
+
+	// response
+	prompt := strings.ReplaceAll(m.Content, "<@"+botID+">", "")
+	prompt = strings.ReplaceAll(prompt, "<@!"+botID+">", "")
+	prompt = strings.TrimSpace(prompt)
+	response, err := app.GenerateResponse(ctx, prompt)
+
+	// stop typing indicator
+	close(stopTyping)
+
+	// log to history
+	app.History.Messages = append(app.History.Messages, Message{
+		Role:    "user",
+		Content: m.Content,
+		UserID:  m.Author.ID,
+	})
+	if response != nil {
+		app.History.Messages = append(app.History.Messages, Message{
+			Role:    "assistant",
+			Content: response.Content,
+			UserID:  m.Author.Username,
+		})
+	}
+
+	// send response
 	if response != nil {
 		app.Discord.ChannelMessageSendReply(m.ChannelID, response.Content, m.Reference())
 	}

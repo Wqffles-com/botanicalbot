@@ -35,6 +35,7 @@ func CreateApp(config Config) *App {
 		Discord: dg,
 		OpenAI:  &ai,
 		Config:  &config,
+		History: &ConversationHistory{Messages: make([]Message, 0)},
 	}
 }
 
@@ -46,18 +47,32 @@ func (app *App) GenerateResponse(ctx context.Context, userPrompt string) (*opena
 
 	sysPrompt := string(dat)
 	information := ctx.Value("information").(struct {
-		User string
+		Username string
+		UserID   string
 	})
+
+	history := Filter(app.History.Messages, func(m Message) bool {
+		return m.UserID == information.UserID
+	})
+
+	messages := Map(history, func(m Message) openai.ChatCompletionMessageParamUnion {
+		if m.Role == "user" {
+			return openai.UserMessage(m.Content)
+		}
+
+		return openai.AssistantMessage(m.Content)
+	})
+	messages = append(messages,
+		openai.SystemMessage(sysPrompt),
+		openai.SystemMessage(information.Username+" ("+information.UserID+")"),
+		openai.UserMessage(userPrompt),
+	)
 
 	resp, err := app.OpenAI.Chat.Completions.New(
 		ctx,
 		openai.ChatCompletionNewParams{
-			Model: app.Config.OpenAI.Model,
-			Messages: []openai.ChatCompletionMessageParamUnion{
-				openai.SystemMessage(sysPrompt),
-				openai.SystemMessage(information.User),
-				openai.UserMessage(userPrompt),
-			},
+			Model:    app.Config.OpenAI.Model,
+			Messages: messages,
 		})
 
 	if err != nil {
@@ -65,4 +80,22 @@ func (app *App) GenerateResponse(ctx context.Context, userPrompt string) (*opena
 	}
 
 	return &resp.Choices[0].Message, nil
+}
+
+func Filter[T any](items []T, predicate func(T) bool) []T {
+	result := make([]T, 0, len(items))
+	for _, item := range items {
+		if predicate(item) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func Map[T, U any](items []T, transform func(T) U) []U {
+	result := make([]U, len(items))
+	for i, item := range items {
+		result[i] = transform(item)
+	}
+	return result
 }
