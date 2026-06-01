@@ -14,24 +14,28 @@ func (*App) HandleReady(_ *discordgo.Session, r *discordgo.Ready) {
 }
 
 func (app *App) HandleMessageCreate(_ *discordgo.Session, m *discordgo.MessageCreate) {
+	if m.Author == nil {
+		return
+	}
 	if m.Author.Bot {
 		return
 	}
 
 	// check if bot was mentioned
+	if app.Discord == nil || app.Discord.State == nil || app.Discord.State.User == nil {
+		log.Printf("discord state is not ready; ignoring message %s", m.ID)
+		return
+	}
 	botID := app.Discord.State.User.ID
 	mentioned := strings.Contains(m.Content, "<@"+botID+">") || strings.Contains(m.Content, "<@!"+botID+">")
-	repliedToBot := m.ReferencedMessage != nil && m.ReferencedMessage.Author.ID == botID
+	repliedToBot := m.ReferencedMessage != nil && m.ReferencedMessage.Author != nil && m.ReferencedMessage.Author.ID == botID
 
 	if !mentioned && !repliedToBot {
 		return
 	}
 
 	// get information
-	ctx := context.WithValue(context.Background(), "information", struct {
-		Username string
-		UserID   string
-	}{
+	ctx := WithRequestInfo(context.Background(), RequestInfo{
 		Username: m.Author.Username,
 		UserID:   m.Author.ID,
 	})
@@ -63,26 +67,27 @@ func (app *App) HandleMessageCreate(_ *discordgo.Session, m *discordgo.MessageCr
 	close(stopTyping)
 
 	// log to history
-	app.History.Messages = append(app.History.Messages, Message{
-		Role:    "user",
-		Content: m.Content,
-		UserID:  m.Author.ID,
-	})
+
 	if response != nil {
-		app.History.Messages = append(app.History.Messages, Message{
+		app.History.Append(Message{
 			Role:    "assistant",
 			Content: response.Content,
-			UserID:  m.Author.Username,
+			UserID:  m.Author.ID,
 		})
 	}
 
 	// send response
 	if response != nil {
-		app.Discord.ChannelMessageSendReply(m.ChannelID, response.Content, m.Reference())
+		if _, sendErr := app.Discord.ChannelMessageSendReply(m.ChannelID, response.Content, m.Reference()); sendErr != nil {
+			log.Printf("Error sending response reply: %v\n", sendErr)
+		}
 	}
 
 	if err != nil {
-		app.Discord.ChannelMessageSendReply(m.ChannelID, "Sorry, something went wrong while generating a response.", m.Reference())
-		log.Printf("Error generating response: %v\n", err)
+		log.Printf("error generating response: %v\n", err)
+		_, sendErr := app.Discord.ChannelMessageSendReply(m.ChannelID, "Sorry, there was an error generating a response.", m.Reference())
+		if sendErr != nil {
+			log.Printf("Error sending failure reply: %v\n", sendErr)
+		}
 	}
 }
