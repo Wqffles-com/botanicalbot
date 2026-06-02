@@ -98,7 +98,7 @@ type Tool struct {
 	Name        string
 	Description string
 	Parameters  map[string]ToolParameter
-	Execute     func(ctx context.Context) (any, error)
+	Execute     func(ctx context.Context, app *App) (any, error)
 }
 
 type ToolParameter struct {

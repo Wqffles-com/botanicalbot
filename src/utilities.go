@@ -64,14 +64,22 @@ func CreateApp(config Config) (*App, error) {
 func (app *App) GenerateResponse(ctx context.Context, userPrompt string) (*openai.ChatCompletion, error) {
 	const maxToolCallRounds = 8
 
-	// load prompt
+	// load prompt.md
 	dat, err := os.ReadFile("prompt.md")
 	if err != nil {
 		return nil, fmt.Errorf("read prompt.md: %w", err)
 	}
+	sysPrompt := string(dat)
+
+	// load lang.md
+	dat, err = os.ReadFile("lang.md")
+	if err != nil {
+		return nil, fmt.Errorf("read lang.md: %w", err)
+	}
+	lang := string(dat)
 
 	// create request info
-	sysPrompt := string(dat)
+
 	information, ok := RequestInfoFromContext(ctx)
 	if !ok {
 		return nil, errors.New("request info missing from context")
@@ -91,6 +99,7 @@ func (app *App) GenerateResponse(ctx context.Context, userPrompt string) (*opena
 	})
 	// construct messages
 	messages = append(messages,
+		openai.SystemMessage(lang),
 		openai.SystemMessage(sysPrompt),
 		openai.SystemMessage("You are being spoken to by "+information.Username+" ("+information.UserID+")"),
 		openai.UserMessage(userPrompt),
@@ -174,7 +183,7 @@ func (app *App) HandleToolCall(ctx context.Context, toolName string) (any, error
 		return nil, fmt.Errorf("unknown tool %q", toolName)
 	}
 
-	return tool[0].Execute(ctx)
+	return tool[0].Execute(ctx, app)
 }
 
 func LoadTools() []Tool {
@@ -188,7 +197,7 @@ func LoadTools() []Tool {
 					Description: "The timezone to get the current time for (e.g. 'America/New_York')",
 				},
 			},
-			Execute: func(ctx context.Context) (any, error) {
+			Execute: func(ctx context.Context, app *App) (any, error) {
 				args, ok := ToolArgsFromContext[map[string]any](ctx)
 				if !ok {
 					return nil, errors.New("tool args missing from context")
@@ -212,7 +221,7 @@ func LoadTools() []Tool {
 					Description: "The title of the note.",
 				},
 			},
-			Execute: func(ctx context.Context) (any, error) {
+			Execute: func(ctx context.Context, app *App) (any, error) {
 				args, ok := ToolArgsFromContext[map[string]any](ctx)
 				if !ok {
 					return nil, errors.New("tool args missing from context")
@@ -247,7 +256,7 @@ func LoadTools() []Tool {
 					Description: "The title of the note to retrieve.",
 				},
 			},
-			Execute: func(ctx context.Context) (any, error) {
+			Execute: func(ctx context.Context, app *App) (any, error) {
 				requestInfo, ok := RequestInfoFromContext(ctx)
 				if !ok {
 					return nil, errors.New("request info missing from context")
@@ -278,7 +287,7 @@ func LoadTools() []Tool {
 			Name:        "get_notes",
 			Description: "Get the titles of all of the notes for the current user",
 			Parameters:  make(map[string]ToolParameter),
-			Execute: func(ctx context.Context) (any, error) {
+			Execute: func(ctx context.Context, app *App) (any, error) {
 				requestInfo, ok := RequestInfoFromContext(ctx)
 				if !ok {
 					return nil, errors.New("erquest info missing from context")
@@ -302,6 +311,39 @@ func LoadTools() []Tool {
 				return map[string][]string{
 					"files": fileNames,
 				}, nil
+			},
+		},
+		{
+			Name:        "run_code",
+			Description: "Runs code in the custom programming language.",
+			Parameters: map[string]ToolParameter{
+				"code": {
+					Type:        "string",
+					Description: "The code to run.",
+				},
+			},
+			Execute: func(ctx context.Context, app *App) (any, error) {
+				args, ok := ToolArgsFromContext[map[string]any](ctx)
+				if !ok {
+					return nil, errors.New("tool args missing from context")
+				}
+
+				code, ok := args["code"].(string)
+				if !ok {
+					return nil, errors.New("code argument is not a string")
+				}
+
+				call, err := InterpretLine(code)
+				if err != nil {
+					return nil, err
+				}
+
+				res, err := CallFunction(*call, app)
+				if err != nil {
+					return nil, err
+				}
+
+				return res, nil
 			},
 		},
 	}
