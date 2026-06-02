@@ -14,24 +14,25 @@ func (*App) HandleReady(_ *discordgo.Session, r *discordgo.Ready) {
 	log.Printf("Logged in as %s (%s)\n", r.User, r.User.ID)
 }
 
-func (app *App) HandleMessageCreate(_ *discordgo.Session, m *discordgo.MessageCreate) {
-	if m.Author == nil {
-		return
-	}
-	if m.Author.Bot {
-		return
-	}
-
-	// check if bot was mentioned
+func validAuthor(author *discordgo.User) bool {
+	return author != nil && !author.Bot
+}
+func botMentioned(m *discordgo.MessageCreate, app *App) bool {
 	if app.Discord == nil || app.Discord.State == nil || app.Discord.State.User == nil {
 		log.Printf("discord state is not ready; ignoring message %s", m.ID)
-		return
+		return false
 	}
+
 	botID := app.Discord.State.User.ID
 	mentioned := strings.Contains(m.Content, "<@"+botID+">") || strings.Contains(m.Content, "<@!"+botID+">")
-	repliedToBot := m.ReferencedMessage != nil && m.ReferencedMessage.Author != nil && m.ReferencedMessage.Author.ID == botID
+	repliedToBot := m.MessageReference != nil && m.MessageReference.MessageID != "" && m.MessageReference.ChannelID == m.ChannelID
 
-	if !mentioned && !repliedToBot {
+	return mentioned || repliedToBot
+}
+
+func (app *App) HandleMessageCreate(_ *discordgo.Session, m *discordgo.MessageCreate) {
+	if !validAuthor(m.Author) ||
+		!botMentioned(m, app) {
 		return
 	}
 
@@ -58,11 +59,7 @@ func (app *App) HandleMessageCreate(_ *discordgo.Session, m *discordgo.MessageCr
 		}
 	}()
 
-	// response
-	prompt := strings.ReplaceAll(m.Content, "<@"+botID+">", "")
-	prompt = strings.ReplaceAll(prompt, "<@!"+botID+">", "")
-	prompt = strings.TrimSpace(prompt)
-	response, err := app.GenerateResponse(ctx, prompt)
+	response, err := app.GenerateResponse(ctx, m.Content)
 
 	// stop typing indicator
 	close(stopTyping)
