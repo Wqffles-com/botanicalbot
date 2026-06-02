@@ -62,6 +62,8 @@ func CreateApp(config Config) (*App, error) {
 }
 
 func (app *App) GenerateResponse(ctx context.Context, userPrompt string) (*openai.ChatCompletion, error) {
+	const maxToolCallRounds = 8
+
 	// load prompt
 	dat, err := os.ReadFile("prompt.md")
 	if err != nil {
@@ -94,19 +96,6 @@ func (app *App) GenerateResponse(ctx context.Context, userPrompt string) (*opena
 		openai.UserMessage(userPrompt),
 	)
 
-	// completion
-	resp, err := app.OpenAI.Chat.Completions.New(
-		ctx,
-		openai.ChatCompletionNewParams{
-			Model:    app.Config.OpenAI.Model,
-			Messages: messages,
-			Tools:    Map(app.Tools, ToolToCompletionTool),
-		})
-
-	if resp == nil || len(resp.Choices) == 0 || err != nil {
-		return nil, err
-	}
-
 	// history - store user message immediately
 	app.History.Append(Message{
 		Role:    "user",
@@ -114,9 +103,33 @@ func (app *App) GenerateResponse(ctx context.Context, userPrompt string) (*opena
 		UserID:  information.UserID,
 	})
 
-	// check for tools
-	toolCalls := resp.Choices[0].Message.ToolCalls
-	if len(toolCalls) != 0 {
+	// keep asking the model until it stops requesting tools.
+	for round := 0; round < maxToolCallRounds; round++ {
+		resp, err := app.OpenAI.Chat.Completions.New(
+			ctx,
+			openai.ChatCompletionNewParams{
+				Model:    app.Config.OpenAI.Model,
+				Messages: messages,
+				Tools:    Map(app.Tools, ToolToCompletionTool),
+			})
+
+		if resp == nil || len(resp.Choices) == 0 || err != nil {
+			return nil, err
+		}
+
+		toolCalls := resp.Choices[0].Message.ToolCalls
+		if len(toolCalls) == 0 {
+			// history - store assistant response (final, after tool calls if any)
+			app.History.Append(Message{
+				Role:    "assistant",
+				Content: resp.Choices[0].Message.Content,
+				UserID:  information.UserID,
+			})
+
+			log.Printf("message: %s", resp.Choices[0].Message.Content)
+			return resp, nil
+		}
+
 		// include the assistant's tool_calls message so tool results can follow it
 		messages = append(messages, resp.Choices[0].Message.ToParam())
 
@@ -147,28 +160,9 @@ func (app *App) GenerateResponse(ctx context.Context, userPrompt string) (*opena
 			// add to messages
 			messages = append(messages, openai.ToolMessage(string(marshalled), toolCall.ID))
 		}
-
-		resp, err = app.OpenAI.Chat.Completions.New(
-			ctx,
-			openai.ChatCompletionNewParams{
-				Model:    app.Config.OpenAI.Model,
-				Messages: messages,
-			})
-
-		if err != nil {
-			return nil, err
-		}
 	}
 
-	// history - store assistant response (final, after tool calls if any)
-	app.History.Append(Message{
-		Role:    "assistant",
-		Content: resp.Choices[0].Message.Content,
-		UserID:  information.UserID,
-	})
-
-	log.Printf("message: %s", resp.Choices[0].Message.Content)
-	return resp, nil
+	return nil, fmt.Errorf("tool call recursion limit reached after %d rounds", maxToolCallRounds)
 }
 
 func (app *App) HandleToolCall(ctx context.Context, toolName string) (any, error) {
