@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -66,19 +67,11 @@ func (app *App) HandleMessageCreate(_ *discordgo.Session, m *discordgo.MessageCr
 	// stop typing indicator
 	close(stopTyping)
 
-	// log to history
-
-	if response != nil {
-		app.History.Append(Message{
-			Role:    "assistant",
-			Content: response.Content,
-			UserID:  m.Author.ID,
-		})
-	}
-
 	// send response
 	if response != nil {
-		if _, sendErr := app.Discord.ChannelMessageSendReply(m.ChannelID, response.Content, m.Reference()); sendErr != nil {
+		message := response.Choices[0].Message
+		usage := response.Usage
+		if _, sendErr := app.Discord.ChannelMessageSendReply(m.ChannelID, fmt.Sprintf("%s\n-# Input/Output/Total: %v/%v/%v", message.Content, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens), m.Reference()); sendErr != nil {
 			log.Printf("Error sending response reply: %v\n", sendErr)
 		}
 	}

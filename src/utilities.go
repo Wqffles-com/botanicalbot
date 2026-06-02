@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/BurntSushi/toml"
@@ -60,7 +61,7 @@ func CreateApp(config Config) (*App, error) {
 	}, nil
 }
 
-func (app *App) GenerateResponse(ctx context.Context, userPrompt string) (*openai.ChatCompletionMessage, error) {
+func (app *App) GenerateResponse(ctx context.Context, userPrompt string) (*openai.ChatCompletion, error) {
 	// load prompt
 	dat, err := os.ReadFile("prompt.md")
 	if err != nil {
@@ -106,15 +107,10 @@ func (app *App) GenerateResponse(ctx context.Context, userPrompt string) (*opena
 		return nil, err
 	}
 
-	// history
+	// history - store user message immediately
 	app.History.Append(Message{
 		Role:    "user",
 		Content: userPrompt,
-		UserID:  information.UserID,
-	})
-	app.History.Append(Message{
-		Role:    "assistant",
-		Content: resp.Choices[0].Message.Content,
 		UserID:  information.UserID,
 	})
 
@@ -136,6 +132,7 @@ func (app *App) GenerateResponse(ctx context.Context, userPrompt string) (*opena
 
 			// handle tool
 			toolCtx := WithToolArgs(ctx, args)
+			toolCtx = WithRequestInfo(toolCtx, information)
 			toolResponse, err := app.HandleToolCall(toolCtx, toolCall.Function.Name)
 			if err != nil {
 				return nil, err
@@ -163,7 +160,15 @@ func (app *App) GenerateResponse(ctx context.Context, userPrompt string) (*opena
 		}
 	}
 
-	return &resp.Choices[0].Message, nil
+	// history - store assistant response (final, after tool calls if any)
+	app.History.Append(Message{
+		Role:    "assistant",
+		Content: resp.Choices[0].Message.Content,
+		UserID:  information.UserID,
+	})
+
+	log.Printf("message: %s", resp.Choices[0].Message.Content)
+	return resp, nil
 }
 
 func (app *App) HandleToolCall(ctx context.Context, toolName string) (any, error) {
@@ -197,6 +202,111 @@ func LoadTools() []Tool {
 
 				return map[string]any{
 					"received_args": args,
+				}, nil
+			},
+		},
+		{
+			Name:        "take_note",
+			Description: "Take a note on the current user and save it to a Markdown file.",
+			Parameters: map[string]ToolParameter{
+				"content": {
+					Type:        "string",
+					Description: "The content to add to the Markdown file.",
+				},
+				"title": {
+					Type:        "string",
+					Description: "The title of the note.",
+				},
+			},
+			Execute: func(ctx context.Context) (any, error) {
+				args, ok := ToolArgsFromContext[map[string]any](ctx)
+				if !ok {
+					return nil, errors.New("tool args missing from context")
+				}
+
+				requestInfo, ok := RequestInfoFromContext(ctx)
+				if !ok {
+					return nil, errors.New("request info missing from context")
+				}
+
+				filename := fmt.Sprintf("data/notes/%s/%s.md", requestInfo.UserID, args["title"].(string))
+				os.MkdirAll(fmt.Sprintf("data/notes/%s", requestInfo.UserID), os.ModePerm)
+				err := os.WriteFile(filename, []byte(args["content"].(string)), os.ModeAppend|os.ModePerm)
+				if os.IsNotExist(err) {
+					err = os.WriteFile(filename, []byte(args["content"].(string)), os.ModePerm)
+				}
+				if err != nil {
+					return nil, fmt.Errorf("write notes file: %w", err)
+				}
+
+				return map[string]any{
+					"status": "note saved",
+				}, nil
+			},
+		},
+		{
+			Name:        "get_note",
+			Description: "Get a specific note for the current user.",
+			Parameters: map[string]ToolParameter{
+				"title": {
+					Type:        "string",
+					Description: "The title of the note to retrieve.",
+				},
+			},
+			Execute: func(ctx context.Context) (any, error) {
+				requestInfo, ok := RequestInfoFromContext(ctx)
+				if !ok {
+					return nil, errors.New("request info missing from context")
+				}
+
+				args, ok := ToolArgsFromContext[map[string]any](ctx)
+				if !ok {
+					return nil, errors.New("tool args missing from context")
+				}
+
+				filename := fmt.Sprintf("data/notes/%s/%s.md", requestInfo.UserID, args["title"].(string))
+				dat, err := os.ReadFile(filename)
+				if os.IsNotExist(err) {
+					return map[string]any{
+						"notes": "user has no notes",
+					}, nil
+				}
+				if err != nil {
+					return nil, fmt.Errorf("read notes file: %w", err)
+				}
+
+				return map[string]any{
+					"notes": string(dat),
+				}, nil
+			},
+		},
+		{
+			Name:        "get_notes",
+			Description: "Get the titles of all of the notes for the current user",
+			Parameters:  make(map[string]ToolParameter),
+			Execute: func(ctx context.Context) (any, error) {
+				requestInfo, ok := RequestInfoFromContext(ctx)
+				if !ok {
+					return nil, errors.New("erquest info missing from context")
+				}
+
+				filename := fmt.Sprintf("data/notes/%s", requestInfo.UserID)
+				files, err := os.ReadDir(filename)
+				if os.IsNotExist(err) {
+					return map[string][]string{
+						"files": {},
+					}, nil
+				}
+				if err != nil {
+					return nil, err
+				}
+
+				fileNames := Map(files, func(e os.DirEntry) string {
+					return e.Name()
+				})
+
+				return map[string][]string{
+					"files": fileNames,
 				}, nil
 			},
 		},

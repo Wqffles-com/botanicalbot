@@ -33,5 +33,4 @@ func main() {
 	if err := app.Discord.Close(); err != nil {
 		log.Printf("error closing discord session: %v", err)
 	}
-	return
 }
